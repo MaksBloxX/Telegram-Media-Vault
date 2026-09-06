@@ -1,0 +1,27 @@
+# --- SECRETS: never commit ---
+config.py
+.env
+*.token
+
+# --- Private data ---
+media.db
+media.db-wal
+media.db-shm
+*.sqlite
+*.sqlite3
+vault_bot.log
+*.log
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+*.egg-info/
+
+# --- Editors / OS ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

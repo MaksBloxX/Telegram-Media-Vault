@@ -36,17 +36,18 @@ Built with `python-telegram-bot` (async) + `aiosqlite`. Runs on **Windows (Power
 | 1 | **Multi-bot, one process** | Put 1–N tokens in `config.py`; all of them poll concurrently in a single `asyncio` loop. Bot 1 is the "announcer" so you don't get N status messages. |
 | 2 | **SHA-256 duplicate vault** | Every photo/video/document's `file_unique_id` is hashed and stored. Re-sends are detected instantly, even months later. |
 | 3 | **Duplicate statistics** | Per-hash `duplicate_count` + `last_duplicate_at`, plus which bot first saved it (`bot_name`). |
-| 4 | **Smart auto-grouping (`/gp`)** | Loose singles are buffered for `ALBUM_BATCH_DELAY` seconds and re-sent as neat 10-item albums. Incoming albums with ≥ 6 items pass through untouched. |
+| 4 | **Smart auto-grouping (`/gp`)** | Loose singles are buffered for `ALBUM_BATCH_DELAY` seconds and re-sent as neat 10-item albums. Incoming albums with **≥ 6** items (`GP_ALBUM_SKIP_MIN`) are re-sent as-is; smaller ones are merged into the queue. |
 | 5 | **Forward-tag stripping** | Uses `copy_message` / `send_media_group`, so the re-posted media has **no "Forwarded from"** header. |
 | 6 | **Auto-delete (`/autodelete`)** | The original messages are removed after the clean copy is posted. |
-| 7 | **Custom caption** | `/addcaption <HTML>` applies a caption to everything; `/removecaption` clears it. |
-| 8 | **Armed Inspect Mode** | `/dbfind` or `/dbdel` with **no reply** arms a 60s window: the next forwarded media is *only* looked up / removed from the vault — never saved, counted, grouped, or deleted. All other bots silently swallow their copy so you get exactly one answer. |
-| 9 | **Safe DB migration** | On startup, missing columns are `ALTER TABLE`-added. Existing rows are never rewritten — an old 185k-hash `media.db` keeps working. |
-| 10 | **WAL + busy_timeout** | `journal_mode=WAL`, `synchronous=NORMAL`, `busy_timeout=5000` → crash-resistant and no "database is locked" spam. |
-| 11 | **Flood-wait aware** | `RetryAfter` is caught on send *and* delete, sleeps `retry_after + margin`, then retries once. |
-| 12 | **Graceful shutdown** | `SIGINT`/`SIGTERM` (and Windows Ctrl+C) stop pollers, then close the DB cleanly in a `finally:` block. |
-| 13 | **Token-leak-proof logging** | `httpx`/`httpcore` loggers are forced to `WARNING`, because their INFO lines contain the full API URL **including your bot token**. |
-| 14 | **Windows UTF-8 fix** | `stdout/stderr` reconfigured to UTF-8 so emoji log lines never crash a `cp1252` console. |
+| 7 | **Custom caption** | `/addcaption <HTML>` sets a caption (HTML parse mode). On albums it is applied to the **first item only** — that's how Telegram shows an album caption. `/removecaption` clears it. |
+| 8 | **Photos/videos split from documents** | Telegram cannot mix documents with photos/videos in one album, so the grouper builds separate 10-item albums for each type automatically. |
+| 9 | **Armed Inspect Mode** | `/dbfind` or `/dbdel` with **no reply** arms a 60s window: the next forwarded media is *only* looked up / removed from the vault — never saved, counted, grouped, or deleted. All other bots silently swallow their copy so you get exactly one answer. |
+| 10 | **Safe DB migration** | On startup, missing columns are `ALTER TABLE`-added. Existing rows are never rewritten — an old 185k-hash `media.db` keeps working. |
+| 11 | **WAL + busy_timeout** | `journal_mode=WAL`, `synchronous=NORMAL`, `busy_timeout=5000` → crash-resistant and no "database is locked" spam. |
+| 12 | **Flood-wait aware** | `RetryAfter` is caught on send *and* delete, sleeps `retry_after + margin`, then retries once. |
+| 13 | **Graceful shutdown** | `SIGINT`/`SIGTERM` (and Windows Ctrl+C) stop pollers, then close the DB cleanly in a `finally:` block. |
+| 14 | **Token-leak-proof logging** | `httpx`/`httpcore` loggers are forced to `WARNING`, because their INFO lines contain the full API URL **including your bot token**. |
+| 15 | **Windows UTF-8 fix** | `stdout/stderr` reconfigured to UTF-8 so emoji log lines never crash a `cp1252` console. |
 
 ---
 
@@ -94,9 +95,11 @@ Message from ADMIN_ID
                                                                  │
    3. ROUTING                                                    │
       /gp ON                                                     │
-        ├─ album ≥ 6 items → pass through as-is                  │
-        ├─ album < 6 items → merge into auto-group queue         │
+        ├─ album ≥ 6 items → re-sent as-is (already looks good)  │
+        ├─ album < 6 items → merged into auto-group queue        │
         └─ single          → queue, flush after ALBUM_BATCH_DELAY│
+             flush: photos/videos and documents are split, then  │
+             chunked into albums of 10, QUEUE_COOLDOWN between   │
       /gp OFF                                                    │
         ├─ album  → rebuilt & re-sent as one album               │
         └─ single → copy_message (forward tag stripped)          │
@@ -261,7 +264,7 @@ Also disable battery optimisation for Termux in Android settings, otherwise poll
 | `ALBUM_BATCH_DELAY` | `3.5` | Seconds to wait before flushing a collected album/queue. |
 | `QUEUE_COOLDOWN` | `2.0` | Pause between sending album chunks (flood protection). |
 | `MAX_DELETE_CHUNK` | `100` | Max messages deleted per batch. |
-| `MAX_SEEN_MEDIA` | `5000` | RAM-cache size for no-DB mode. |
+| `MAX_SEEN_MEDIA` | `5000` | ⚠️ **Currently unused** — leftover from an older RAM-cache build. Safe to leave or delete. |
 | `DEFAULT_SETTINGS.autodelete` | `True` | Delete originals. |
 | `DEFAULT_SETTINGS.custom_caption` | `None` | Caption applied to reposts. |
 | `DEFAULT_SETTINGS.auto_group` | `True` | Smart grouping on start. |
@@ -278,8 +281,8 @@ Hitting flood waits → raise `QUEUE_COOLDOWN` to `3.0`+.
 ## 📂 Files created at runtime
 
 ```
-media.db            SQLite vault  (+ .db-wal / .db-shm while running)
-vault_bot.log       rotating-free plain log, UTF-8
+media.db            SQLite vault  (+ media.db-wal / media.db-shm while running)
+vault_bot.log       plain UTF-8 log (no rotation — trim it manually if it grows)
 ```
 
 Table `media_vault`: `file_hash` (PK) · `bot_name` · `created_at` · `duplicate_count` · `last_duplicate_at`
@@ -321,4 +324,4 @@ for lost media, deleted messages, or banned bots.
 
 ## 📄 License
 
-MIT — see `LICENSE`.
+MIT — see the [`LICENSE`](LICENSE) file. Copyright (c) 2026 MaksBloxX.
